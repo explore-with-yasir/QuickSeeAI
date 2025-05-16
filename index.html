@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>QuickSee AI</title>
+    <style>
+      :root {
+        --primary: #4f46e5;
+        --primary-dark: #4338ca;
+        --bg: #f9fafb;
+        --card: #ffffff;
+        --accent: #e0e7ff;
+        --text: #111827;
+        --radius: 10px;
+        --shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+      }
+
+      body {
+        font-family: "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 20px;
+        background-color: var(--bg);
+        color: var(--text);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+
+      h1 {
+        font-size: 2em;
+        margin-bottom: 10px;
+      }
+
+      #mainWrapper {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 20px;
+        justify-content: center;
+        align-items: flex-start;
+        margin-top: 20px;
+      }
+
+      #instructions,
+      #intervalSlider {
+        flex: 1;
+        max-width: 200px;
+        background-color: var(--card);
+        padding: 15px;
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+      }
+
+      #instructions h3,
+      #intervalSlider h3 {
+        margin-top: 0;
+        font-size: 1.1em;
+      }
+
+      .instruction-option {
+        display: block;
+        padding: 10px;
+        margin: 8px 0;
+        background-color: var(--accent);
+        border-radius: var(--radius);
+        cursor: pointer;
+        text-align: center;
+        font-weight: 500;
+        transition: background 0.2s ease;
+      }
+
+      .instruction-option:hover,
+      .instruction-option.active {
+        background-color: var(--primary);
+        color: white;
+      }
+
+      #videoContainer {
+        position: relative;
+        width: 480px;
+        height: 360px;
+        border-radius: var(--radius);
+        overflow: hidden;
+        border: 3px solid var(--primary-dark);
+      }
+
+      #videoFeed {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+
+      #loadingOverlay {
+        position: absolute;
+        inset: 0;
+        background-color: rgba(0, 0, 0, 0.6);
+        color: white;
+        font-size: 1.5em;
+        font-weight: bold;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 2;
+      }
+
+      #intervalSlider input {
+        width: 100%;
+      }
+
+      #canvas {
+        display: none;
+      }
+
+      #loadModelButton {
+        background-color: var(--primary);
+        color: white;
+        padding: 12px 20px;
+        font-size: 16px;
+        border: none;
+        border-radius: var(--radius);
+        cursor: pointer;
+        margin-top: 20px;
+        box-shadow: var(--shadow);
+        transition: background 0.2s ease;
+      }
+
+      #loadModelButton:hover {
+        background-color: var(--primary-dark);
+      }
+
+      #responseContainer {
+        margin-top: 30px;
+        max-width: 720px;
+        width: 100%;
+        background-color: var(--card);
+        padding: 20px;
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        font-size: 1.1em;
+        line-height: 1.5em;
+        color: var(--text);
+        border-left: 6px solid var(--primary);
+        transition: all 0.3s ease;
+      }
+
+      .hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>QuickSee AI</h1>
+
+    <button id="loadModelButton">Load the Model</button>
+
+    <div id="mainWrapper">
+      <!-- Instruction options -->
+      <div id="instructions">
+        <h3>Select Instruction</h3>
+        <div class="instruction-option">What do you see?</div>
+        <div class="instruction-option">Describe the environment</div>
+        <div class="instruction-option">What's happening here?</div>
+        <div class="instruction-option">Detect objects</div>
+        <div class="instruction-option">Analyze the scene</div>
+      </div>
+
+      <!-- Camera view -->
+      <div id="videoContainer">
+        <video id="videoFeed" autoplay playsinline></video>
+        <div id="loadingOverlay">Loading...</div>
+      </div>
+
+      <!-- Interval slider -->
+      <div id="intervalSlider">
+        <h3>Interval (ms)</h3>
+        <input type="range" id="intervalRange" min="0" max="5000" step="100" value="1000" />
+        <div><strong><span id="intervalValue">1000</span> ms</strong></div>
+      </div>
+    </div>
+
+    <!-- Response output -->
+    <div id="responseContainer">
+      <em>The response from the model will appear here...</em>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <!-- Start button for processing -->
+    <button id="startButton" class="start">Start Processing</button>
+
+    <script type="module">
+      import {
+        AutoProcessor,
+        AutoModelForVision2Seq,
+        RawImage,
+      } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers/dist/transformers.min.js";
+
+      const video = document.getElementById("videoFeed");
+      const canvas = document.getElementById("canvas");
+      const instructionOptions = document.querySelectorAll(".instruction-option");
+      const responseText = document.getElementById("responseContainer");
+      const intervalRange = document.getElementById("intervalRange");
+      const intervalValue = document.getElementById("intervalValue");
+      const startButton = document.getElementById("startButton");
+      const loadingOverlay = document.getElementById("loadingOverlay");
+
+      let selectedInstruction = "What do you see?"; // default instruction
+      let stream;
+      let isProcessing = false;
+      let processor, model;
+
+      async function initModel() {
+        const modelId = "HuggingFaceTB/SmolVLM-500M-Instruct"; // or "HuggingFaceTB/SmolVLM-Instruct";
+        loadingOverlay.style.display = "flex";
+        responseText.innerHTML = "Loading processor...";
+        processor = await AutoProcessor.from_pretrained(modelId);
+        responseText.innerHTML = "Processor loaded. Loading model...";
+        model = await AutoModelForVision2Seq.from_pretrained(modelId, {
+          dtype: {
+            embed_tokens: "fp16",
+            vision_encoder: "q4",
+            decoder_model_merged: "q4",
+          },
+          device: "webgpu",
+        });
+        responseText.innerHTML = "Model loaded. Initializing camera...";
+        loadingOverlay.style.display = "none";
+      }
+
+      async function initCamera() {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          });
+          video.srcObject = stream;
+          responseText.innerHTML = "Camera access granted. Ready to start.";
+        } catch (err) {
+          console.error("Error accessing camera:", err);
+          responseText.innerHTML = `Error accessing camera: ${err.name} - ${err.message}. Please ensure permissions are granted and you are on HTTPS or localhost.`;
+          alert(`Error accessing camera: ${err.name}. Make sure you've granted permission and are on HTTPS or localhost.`);
+        }
+      }
+
+      function captureImage() {
+        if (!stream || !video.videoWidth) {
+          console.warn("Video stream not ready for capture.");
+          return null;
+        }
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const frame = context.getImageData(0, 0, canvas.width, canvas.height);
+        return new RawImage(frame.data, frame.width, frame.height, 4);
+      }
+
+      async function runLocalVisionInference(imgElement, instruction) {
+        const messages = [
+          {
+            role: "user",
+            content: [{ type: "image" }, { type: "text", text: instruction }],
+          },
+        ];
+        const text = processor.apply_chat_template(messages, {
+          add_generation_prompt: true,
+        });
+        const inputs = await processor(text, [imgElement], {
+          do_image_splitting: false,
+        });
+        const generatedIds = await model.generate({
+          ...inputs,
+          max_new_tokens: 100,
+        });
+        const output = processor.batch_decode(
+          generatedIds.slice(null, [inputs.input_ids.dims.at(-1), null]),
+          { skip_special_tokens: true }
+        );
+        return output[0].trim();
+      }
+
+      async function sendData() {
+        if (!isProcessing) return;
+        const rawImg = captureImage();
+        if (!rawImg) {
+          responseText.innerHTML = "Capture failed";
+          return;
+        }
+        try {
+          const reply = await runLocalVisionInference(rawImg, selectedInstruction);
+          responseText.innerHTML = reply;
+        } catch (e) {
+          console.error(e);
+          responseText.innerHTML = `Error: ${e.message}`;
+        }
+      }
+
+      function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      async function processingLoop() {
+        const intervalMs = parseInt(intervalRange.value, 10);
+        while (isProcessing) {
+          await sendData();
+          if (!isProcessing) break;
+          await sleep(intervalMs);
+        }
+      }
+
+      function handleStart() {
+        if (!stream) {
+          responseText.innerHTML = "Camera not available. Cannot start.";
+          alert("Camera not available. Please grant permission first.");
+          return;
+        }
+        isProcessing = true;
+        startButton.textContent = "Stop Processing";
+        startButton.classList.replace("start", "stop");
+        instructionOptions.forEach((option) => option.setAttribute("disabled", "true"));
+        intervalRange.setAttribute("disabled", "true");
+        responseText.innerHTML = "Processing started...";
+        processingLoop();
+      }
+
+      function handleStop() {
+        isProcessing = false;
+        startButton.textContent = "Start Processing";
+        startButton.classList.replace("stop", "start");
+        instructionOptions.forEach((option) => option.removeAttribute("disabled"));
+        intervalRange.removeAttribute("disabled");
+        if (responseText.innerHTML.startsWith("Processing started...")) {
+          responseText.innerHTML = "Processing stopped.";
+        }
+      }
+
+      startButton.addEventListener("click", () => {
+        if (isProcessing) {
+          handleStop();
+        } else {
+          handleStart();
+        }
+      });
+
+      instructionOptions.forEach((option) => {
+        option.addEventListener("click", () => {
+          selectedInstruction = option.textContent;
+          instructionOptions.forEach((el) => el.classList.remove("active"));
+          option.classList.add("active");
+        });
+      });
+
+      intervalRange.addEventListener("input", () => {
+        intervalValue.textContent = `${intervalRange.value} ms`;
+      });
+
+      window.addEventListener("DOMContentLoaded", async () => {
+        if (!navigator.gpu) {
+          const videoElement = document.getElementById("videoFeed");
+          const warningElement = document.createElement("p");
+          warningElement.textContent =
+            "WebGPU is not available in this browser.";
+          warningElement.style.color = "red";
+          warningElement.style.textAlign = "center";
+          videoElement.parentNode.insertBefore(
+            warningElement,
+            videoElement.nextSibling
+          );
+        }
+        await initModel();
+        await initCamera();
+      });
+
+      window.addEventListener("beforeunload", () => {
+        if (stream) {
+          stream.getTracks().forEach((track) => track.stop());
+        }
+      });
+    </script>
+  </body>
+</html>
